@@ -91,6 +91,7 @@ dependencies = [
  "axum",
  "libvips",
  "serde",
+ "tera",
  "tokio",
 ]
 
@@ -506,6 +507,15 @@ name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
+
+[[package]]
+name = "tera"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38ea62bd58771b570262e11ffa274fa9eda9986bd886e6e3a1f7f42afef8024c"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "tokio"
