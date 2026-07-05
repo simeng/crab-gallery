@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt::Display, sync::Arc};
 
 use axum::{
     Router,
@@ -9,12 +9,38 @@ use axum::{
     routing::{get, post},
 };
 use libvips::VipsApp;
+use mimetype_detector::detect_file;
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
 
 struct AppState {
     vips: VipsApp,
     tera: Tera,
+}
+
+#[derive(Deserialize, Debug)]
+enum FitOption {
+    #[serde(rename = "contain")]
+    Contain,
+    #[serde(rename = "max")]
+    Max,
+    #[serde(rename = "fill")]
+    Fill,
+    #[serde(rename = "fill-max")]
+    FillMax,
+    #[serde(rename = "stretch")]
+    Stretch,
+    #[serde(rename = "cover")]
+    Cover,
+    #[serde(rename = "crop")]
+    Crop,
+}
+
+#[derive(Deserialize, Debug)]
+struct ResizeParams {
+    w: Option<u32>,
+    h: Option<u32>,
+    fit: Option<FitOption>,
 }
 
 #[tokio::main]
@@ -35,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let router = Router::new()
         .route("/", get(render_root))
-        .route("/image/{*path}", get(render_image))
+        .route("/images/{*path}", get(render_image))
         .with_state(shared_state);
 
     println!("Listening on: {}", bind_string);
@@ -52,14 +78,27 @@ async fn render_root(State(state): State<Arc<AppState>>) -> HtmlResponse<String>
     HtmlResponse(state.tera.render("index", &context).unwrap())
 }
 
+#[axum::debug_handler]
 async fn render_image(
-    State(state): State<Arc<AppState>>,
     Path(path): Path<String>,
-) -> impl IntoResponse {
+    Query(resize_params): Query<ResizeParams>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, StatusCode> {
     println!("Loaded image: {}", path);
-    Response::builder()
+    println!("Query params: {:?}", resize_params);
+    let full_path = std::path::Path::new("./images/").join(path);
+    let mime_type = detect_file(&full_path).map_err(|err| {
+        println!("error: {}", err);
+        StatusCode::NOT_FOUND
+    })?;
+    println!("Showing mime type: {}", mime_type);
+    let content = std::fs::read(full_path).map_err(|err| {
+        println!("err: {}", err);
+        StatusCode::NOT_FOUND
+    })?;
+    Ok(Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "image/png")
-        .body(Body::from(""))
-        .unwrap()
+        .header(header::CONTENT_TYPE, mime_type.to_string())
+        .body(Body::from(content))
+        .unwrap())
 }
