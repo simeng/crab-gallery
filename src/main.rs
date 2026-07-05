@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use axum::{
     Router,
+    body::Body,
     extract::{Json, Path, Query, State},
-    http::StatusCode,
-    response::{Html as HtmlResponse, Json as JsonResponse},
+    http::{StatusCode, header},
+    response::{Html as HtmlResponse, IntoResponse, Json as JsonResponse, Response},
     routing::{get, post},
 };
 use libvips::VipsApp;
@@ -34,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let router = Router::new()
         .route("/", get(render_root))
+        .route("/image/{*path}", get(render_image))
         .with_state(shared_state);
 
     println!("Listening on: {}", bind_string);
@@ -46,6 +48,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn render_root(State(state): State<Arc<AppState>>) -> HtmlResponse<String> {
     println!("Rendered index");
-    let mut context = Context::new();
+    let context = Context::new();
     HtmlResponse(state.tera.render("index", &context).unwrap())
+}
+
+async fn render_image(
+    State(state): State<Arc<AppState>>,
+    Path(path): Path<String>,
+) -> impl IntoResponse {
+    println!("Loaded image: {}", path);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "image/png")
+        .body(Body::from(""))
+        .unwrap()
 }
