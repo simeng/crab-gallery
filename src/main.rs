@@ -68,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let router = Router::new()
         .route("/", get(render_root))
+        .route("/style.css", get(render_style))
         .route("/images/{*path}", get(render_image))
         .with_state(shared_state);
 
@@ -77,6 +78,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, router).await.unwrap();
 
     Ok(())
+}
+
+async fn render_style(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "text/css")
+        .body(Body::from(include_str!("../templates/style.css")))
+        .unwrap()
 }
 
 async fn render_root(State(state): State<Arc<AppState>>) -> HtmlResponse<String> {

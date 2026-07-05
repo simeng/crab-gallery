@@ -1,6 +1,7 @@
 <!doctype html>
 <head>
   <title>crab gallery</title>
+  <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   Crabs'R'Us
