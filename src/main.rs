@@ -8,10 +8,15 @@ use axum::{
     response::{Html as HtmlResponse, IntoResponse, Json as JsonResponse, Response},
     routing::{get, post},
 };
-use libvips::VipsApp;
+use libvips::{
+    VipsApp, VipsImage,
+    ops::{self, ResizeOptions},
+};
 use mimetype_detector::detect_file;
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
+
+use crate::FitOption::Contain;
 
 struct AppState {
     vips: VipsApp,
@@ -22,6 +27,7 @@ struct AppState {
 enum FitOption {
     #[serde(rename = "contain")]
     Contain,
+    /*
     #[serde(rename = "max")]
     Max,
     #[serde(rename = "fill")]
@@ -34,12 +40,13 @@ enum FitOption {
     Cover,
     #[serde(rename = "crop")]
     Crop,
+    */
 }
 
 #[derive(Deserialize, Debug)]
 struct ResizeParams {
-    w: Option<u32>,
-    h: Option<u32>,
+    w: Option<i32>,
+    h: Option<i32>,
     fit: Option<FitOption>,
 }
 
@@ -92,7 +99,28 @@ async fn render_image(
         StatusCode::NOT_FOUND
     })?;
     println!("Showing mime type: {}", mime_type);
-    let content = std::fs::read(full_path).map_err(|err| {
+    match resize_params.fit {
+        Some(FitOption::Contain) => {
+            println!("Fit: contain");
+            if let Some(path_str) = full_path.to_str() {
+                let thumb = ops::thumbnail(path_str, resize_params.w.unwrap())
+                    .map_err(|_| StatusCode::NOT_FOUND)?;
+                let buf = ops::jpegsave_buffer(&thumb).map_err(|err| {
+                    println!("err: {}", err);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, mime_type.to_string())
+                    .body(Body::from(buf))
+                    .unwrap());
+            } else {
+                ()
+            }
+        }
+        None => (),
+    }
+    let content = std::fs::read(&full_path).map_err(|err| {
         println!("err: {}", err);
         StatusCode::NOT_FOUND
     })?;
