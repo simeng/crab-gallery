@@ -1,4 +1,4 @@
-use std::{fmt::Display, sync::Arc};
+use std::{fmt::Display, fs::FileType, sync::Arc};
 
 use axum::{
     Router,
@@ -15,6 +15,7 @@ use libvips::{
 use mimetype_detector::detect_file;
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
+use walkdir::WalkDir;
 
 use crate::FitOption::Contain;
 
@@ -50,16 +51,45 @@ struct ResizeParams {
     fit: Option<FitOption>,
 }
 
+#[derive(Deserialize, Debug)]
+struct ImageFile {
+    path: String,
+    title: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_string = "0.0.0.0:8033";
     let app = VipsApp::new("crab-gallery", false).expect("Cannot init libvips");
     app.concurrency_set(2);
 
-    let mut tera = Tera::new();
-    tera.add_template_files(vec![("./templates/index.tera", Some("index"))])?;
+    let mut tera = Tera::default();
+    // tera.add_template_files(vec![("./templates/index.tera", Some("index"))])?;
+    tera.load_from_glob("templates/**/*").unwrap();
 
+    for template_name in tera.get_template_names() {
+        println!("Loaded templates: {:?}", template_name);
+    }
     println!("Vips version: {}", app.version_string()?);
+
+    let image_files = WalkDir::new("./images");
+    let mut images: Vec<ImageFile> = vec![];
+
+    for i in image_files {
+        let entry = i?;
+        let path = entry.path();
+        let filename = path
+            .file_name()
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap();
+        if entry.file_type().is_file() && filename.ends_with(".jpg") {
+            images.push(ImageFile {
+                path: String::from(path.to_str().unwrap()),
+                title: Some(filename),
+            });
+        }
+    }
+    println!("images: {:?}", images);
 
     let shared_state = Arc::new(AppState {
         vips: app,
@@ -67,7 +97,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let router = Router::new()
-        .route("/", get(render_root))
+        .route("/", get(render_index))
+        .route("/view/{*path}", get(render_view))
         .route("/style.css", get(render_style))
         .route("/images/{*path}", get(render_image))
         .with_state(shared_state);
@@ -84,21 +115,31 @@ async fn render_style(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Response::builder()
         .status(200)
         .header(header::CONTENT_TYPE, "text/css")
-        .body(Body::from(include_str!("../templates/style.css")))
+        .body(state.tera.render("style.css", &Context::new()).unwrap())
         .unwrap()
 }
 
-async fn render_root(State(state): State<Arc<AppState>>) -> HtmlResponse<String> {
+async fn render_index(State(state): State<Arc<AppState>>) -> HtmlResponse<String> {
     println!("Rendered index");
     let context = Context::new();
-    HtmlResponse(state.tera.render("index", &context).unwrap())
+    HtmlResponse(state.tera.render("index.tera", &context).unwrap())
+}
+
+async fn render_view(
+    Path(path): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> HtmlResponse<String> {
+    println!("Rendered view/");
+    let mut context = Context::new();
+    context.insert("image", &path);
+    HtmlResponse(state.tera.render("view.tera", &context).unwrap())
 }
 
 #[axum::debug_handler]
 async fn render_image(
     Path(path): Path<String>,
     Query(resize_params): Query<ResizeParams>,
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, StatusCode> {
     println!("Loaded image: {}", path);
     println!("Query params: {:?}", resize_params);

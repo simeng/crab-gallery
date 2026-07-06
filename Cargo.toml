@@ -8,5 +8,6 @@ axum = { version = "0.8.9", features = ["macros"] }
 libvips = "2.3.0"
 mimetype-detector = "0.3.10"
 serde = { version = "1.0.228", features = ["derive"] }
-tera = { version = "2.0.0" }
+tera = { version = "2.0.0", features = ['glob_fs'] }
 tokio = { version = "1.52.3", features = ["full"] }
+walkdir = "2.5.0"

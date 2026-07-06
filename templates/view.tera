@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>crab gallery</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+    <div class="gallery-container">
+        <!-- Big In-Focus Image -->
+        <div class="featured-wrapper">
+            <img id="featured" class="featured-image" src="/images/{{ image }}" alt="Featured gallery image">
+        </div>
+
+        <!-- Previous / Next Thumbnail List -->
+        <div id="thumbnails" class="thumbnail-list">
+            <!-- Populated via JavaScript -->
+        </div>
+    </div>
+
+    <script>
+        (async function() {
+        const images = await fetch("/api/images").then(r => r.json())
+
+        const featuredImg = document.getElementById('featured');
+        const thumbnailContainer = document.getElementById('thumbnails');
+
+        images.forEach((img, index) => {
+            const thumbItem = document.createElement('div');
+            thumbItem.classList.add('thumbnail-item');
+            if (featuredImg.setAttribute('src').indexOf(img.path) !== -1) thumbItem.classList.add('active');
+
+            const thumbImage = document.createElement('img')
+            thumbImage.setAttribute('alt', img.title)
+            thumbImage.setAttribute('src', `/images/${img.path}?w=120&h=80&fit=contain`)
+            thumbItem.appendChild(thumbImage)
+
+            thumbItem.addEventListener('click', () => {
+                // Update active class
+                document.querySelector('.thumbnail-item.active').classList.remove('active');
+                thumbItem.classList.add('active');
+
+                // Fade transition effect
+                featuredImg.style.opacity = '0';
+                setTimeout(() => {
+                    featuredImg.src = `/images/${img.path}`
+                    featuredImg.alt = img.title;
+                    featuredImg.style.opacity = '1';
+                }, 200);
+
+                // Center the clicked thumbnail inside the scroll view
+                thumbItem.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            });
+
+            thumbnailContainer.appendChild(thumbItem);
+        });
+        })();
+    </script>
+
+</body>
+</html>
