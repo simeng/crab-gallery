@@ -1,4 +1,4 @@
-use std::{fmt::Display, fs::FileType, sync::Arc};
+use std::{collections::HashMap, fmt::Display, fs::FileType, sync::Arc};
 
 use axum::{
     Router,
@@ -15,16 +15,18 @@ use libvips::{
 use mimetype_detector::detect_file;
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 use crate::FitOption::Contain;
 
 struct AppState {
     vips: VipsApp,
     tera: Tera,
+    images: HashMap<String, ImageFile>,
+    image_list: Vec<String>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Serialize)]
 enum FitOption {
     #[serde(rename = "contain")]
     Contain,
@@ -44,17 +46,19 @@ enum FitOption {
     */
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Serialize)]
 struct ResizeParams {
     w: Option<i32>,
     h: Option<i32>,
     fit: Option<FitOption>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Serialize, Clone)]
 struct ImageFile {
     path: String,
     title: Option<String>,
+    width: i32,
+    height: i32,
 }
 
 #[tokio::main]
@@ -73,20 +77,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Vips version: {}", app.version_string()?);
 
     let image_files = WalkDir::new("./images");
-    let mut images: Vec<ImageFile> = vec![];
+    let mut images: HashMap<String, ImageFile> = HashMap::new();
+    let mut image_list: Vec<String> = vec![];
 
     for i in image_files {
-        let entry = i?;
+        let entry: DirEntry = i?;
         let path = entry.path();
-        let filename = path
-            .file_name()
-            .map(|e| e.to_string_lossy().into_owned())
-            .unwrap();
-        if entry.file_type().is_file() && filename.ends_with(".jpg") {
-            images.push(ImageFile {
-                path: String::from(path.to_str().unwrap()),
-                title: Some(filename),
-            });
+        if entry.file_type().is_file()
+            && path.extension().map_or(false, |e| e == "jpg" || e == "JPG")
+        {
+            if let Some(path_str) = path.to_str() {
+                match libvips::VipsImage::new_from_file(path.to_str().unwrap()) {
+                    Ok(i) => {
+                        let filename = path.file_name().map(|e| e.to_string_lossy().into_owned());
+                        let key = path_str.to_string();
+                        image_list.push(key);
+                        let key = path_str.to_string();
+                        images.insert(
+                            key,
+                            ImageFile {
+                                path: path_str.to_string(),
+                                title: filename,
+                                width: i.get_width(),
+                                height: i.get_height(),
+                            },
+                        );
+                    }
+                    Err(e) => println!("err: {}", e),
+                }
+            }
         }
     }
     println!("images: {:?}", images);
@@ -94,6 +113,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shared_state = Arc::new(AppState {
         vips: app,
         tera: tera,
+        images: images,
+        image_list: image_list,
     });
 
     let router = Router::new()
@@ -101,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/view/{*path}", get(render_view))
         .route("/style.css", get(render_style))
         .route("/images/{*path}", get(render_image))
+        .route("/api/images", get(render_api))
         .with_state(shared_state);
 
     println!("Listening on: {}", bind_string);
@@ -109,6 +131,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, router).await.unwrap();
 
     Ok(())
+}
+
+async fn render_api(State(state): State<Arc<AppState>>) -> JsonResponse<Vec<ImageFile>> {
+    let thumbnails = state
+        .image_list
+        .get(0..5)
+        .into_iter()
+        .flatten()
+        .filter_map(|s| state.images.get(s))
+        .cloned()
+        .collect();
+
+    JsonResponse(thumbnails)
 }
 
 async fn render_style(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -130,8 +165,23 @@ async fn render_view(
     State(state): State<Arc<AppState>>,
 ) -> HtmlResponse<String> {
     println!("Rendered view/");
+    println!("List: {:?}", state.image_list);
     let mut context = Context::new();
-    context.insert("image", &path);
+    let key = format!("./images/{}", path);
+    if let Some(image) = state.images.get(&key) {
+        context.insert("image", &image);
+    }
+
+    let thumbnails: Vec<ImageFile> = state
+        .image_list
+        .get(0..5)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| state.images.get(e))
+        .cloned()
+        .collect();
+    context.insert("thumbnails", &thumbnails);
+
     HtmlResponse(state.tera.render("view.tera", &context).unwrap())
 }
 
