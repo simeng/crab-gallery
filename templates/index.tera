@@ -9,7 +9,7 @@
 <body>
   <div class="gallery-container">
     Crabs'R'Us
-    <div id="thumbnails" class="thumbnail-list">
+    <div class="latest-list">
       {% for i in latest %}
       <div>
         <div class="thumbnail-item">

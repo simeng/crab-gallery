@@ -93,7 +93,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let entry: DirEntry = i?;
         let path = entry.path();
         if entry.file_type().is_file()
-            && path.extension().map_or(false, |e| e == "jpg" || e == "JPG")
+            && path.extension().map_or(false, |e| {
+                e.to_ascii_lowercase() == "jpg"
+                    || e.to_ascii_lowercase() == "jpeg"
+                    || e.to_ascii_lowercase() == "png"
+            })
         {
             if let Some(path_str) = path.to_str() {
                 match libvips::VipsImage::new_from_file(path.to_str().unwrap()) {
@@ -170,12 +174,7 @@ async fn render_index(State(state): State<Arc<AppState>>) -> HtmlResponse<String
     let mut thumbnails: Vec<Arc<ImageFile>> = state.image_list.clone();
     thumbnails.sort_by_key(|a| a.modified_at);
 
-    let thumbnails: Vec<ImageFile> = thumbnails
-        .get(0..5)
-        .into_iter()
-        .flatten()
-        .map(|t| (**t).clone())
-        .collect();
+    let thumbnails: Vec<ImageFile> = thumbnails.iter().take(100).map(|t| (**t).clone()).collect();
     context.insert("latest", &thumbnails);
     HtmlResponse(state.tera.render("index.tera", &context).unwrap())
 }
