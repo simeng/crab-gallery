@@ -1,4 +1,10 @@
-use std::{collections::HashMap, fmt::Display, fs::FileType, sync::Arc};
+use std::{
+    collections::HashMap,
+    default,
+    fmt::Display,
+    fs::{FileType, metadata},
+    sync::Arc,
+};
 
 use axum::{
     Router,
@@ -8,6 +14,7 @@ use axum::{
     response::{Html as HtmlResponse, IntoResponse, Json as JsonResponse, Response},
     routing::{get, post},
 };
+use chrono::{DateTime, Local};
 use libvips::{
     VipsApp, VipsImage,
     ops::{self, ResizeOptions},
@@ -53,12 +60,13 @@ struct ResizeParams {
     fit: Option<FitOption>,
 }
 
-#[derive(Deserialize, Debug, Serialize, Clone)]
+#[derive(Deserialize, Debug, Serialize, Clone, Default)]
 struct ImageFile {
     path: String,
     title: Option<String>,
     width: i32,
     height: i32,
+    modified_at: Option<DateTime<Local>>,
 }
 
 #[tokio::main]
@@ -93,6 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let key = path_str.to_string();
                         image_list.push(key);
                         let key = path_str.to_string();
+                        let meta = metadata(path_str)?;
+
+                        let modified_at: Option<DateTime<Local>> =
+                            meta.modified().ok().map(|t| t.into());
+
                         images.insert(
                             key,
                             ImageFile {
@@ -100,6 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 title: filename,
                                 width: i.get_width(),
                                 height: i.get_height(),
+                                modified_at,
                             },
                         );
                     }

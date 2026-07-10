@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 axum = { version = "0.8.9", features = ["macros"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 libvips = "2.3.0"
 mimetype-detector = "0.3.10"
 serde = { version = "1.0.228", features = ["derive"] }
