@@ -15,6 +15,20 @@ body {
   padding: 20px;
 }
 
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 2;
+}
+.label {
+  text-align: center;
+  color: #888;
+  font-size: 12px;
+  padding: 2px;
+  background-color: #000;
+  border-radius: 2px;
+}
+
 .gallery-container {
   width: 100%;
   max-width: 800px;
@@ -53,6 +67,9 @@ body {
   scrollbar-width: thin;
   scrollbar-color: #333 #121212;
 }
+.thumbnail-list.faded .thumbnail-item {
+  opacity: 0.5;
+}
 
 .thumbnail-list::-webkit-scrollbar {
   height: 6px;
@@ -70,7 +87,6 @@ body {
   overflow: hidden;
   cursor: pointer;
   border: 2px solid transparent;
-  opacity: 0.5;
   transition: all 0.2s ease;
   background-color: #1a1a1a;
 }

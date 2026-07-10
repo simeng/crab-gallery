@@ -15,7 +15,7 @@
         </div>
 
         <!-- Previous / Next Thumbnail List -->
-        <div id="thumbnails" class="thumbnail-list">
+        <div id="thumbnails" class="thumbnail-list faded">
           {% for i in thumbnails %}
           <div class="thumbnail-item">
             <a href="/view/{{i.title}}">

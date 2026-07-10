@@ -21,7 +21,7 @@ use libvips::{
 };
 use mimetype_detector::detect_file;
 use serde::{Deserialize, Serialize};
-use tera::{Context, Tera};
+use tera::{Context, Kwargs, Tera, TeraResult, Value};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::FitOption::Contain;
@@ -29,8 +29,8 @@ use crate::FitOption::Contain;
 struct AppState {
     vips: VipsApp,
     tera: Tera,
-    images: HashMap<String, ImageFile>,
-    image_list: Vec<String>,
+    images: HashMap<String, Arc<ImageFile>>,
+    image_list: Vec<Arc<ImageFile>>,
 }
 
 #[derive(Deserialize, Debug, Serialize)]
@@ -77,6 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut tera = Tera::default();
     // tera.add_template_files(vec![("./templates/index.tera", Some("index"))])?;
+    tera.register_filter("date_format", date_format_filter);
     tera.load_from_glob("templates/**/*").unwrap();
 
     for template_name in tera.get_template_names() {
@@ -85,8 +86,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Vips version: {}", app.version_string()?);
 
     let image_files = WalkDir::new("./images");
-    let mut images: HashMap<String, ImageFile> = HashMap::new();
-    let mut image_list: Vec<String> = vec![];
+    let mut images: HashMap<String, Arc<ImageFile>> = HashMap::new();
+    let mut image_list: Vec<Arc<ImageFile>> = vec![];
 
     for i in image_files {
         let entry: DirEntry = i?;
@@ -98,29 +99,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match libvips::VipsImage::new_from_file(path.to_str().unwrap()) {
                     Ok(i) => {
                         let filename = path.file_name().map(|e| e.to_string_lossy().into_owned());
-                        let key = path_str.to_string();
-                        image_list.push(key);
-                        let key = path_str.to_string();
                         let meta = metadata(path_str)?;
-
                         let modified_at: Option<DateTime<Local>> =
                             meta.modified().ok().map(|t| t.into());
 
-                        images.insert(
-                            key,
-                            ImageFile {
-                                path: path_str.to_string(),
-                                title: filename,
-                                width: i.get_width(),
-                                height: i.get_height(),
-                                modified_at,
-                            },
-                        );
+                        image_list.push(Arc::new(ImageFile {
+                            path: path_str.to_string(),
+                            title: filename,
+                            width: i.get_width(),
+                            height: i.get_height(),
+                            modified_at,
+                        }));
                     }
                     Err(e) => println!("err: {}", e),
                 }
             }
         }
+    }
+    for image in &image_list {
+        images.insert(image.path.clone(), Arc::clone(image));
     }
     println!("images: {:?}", images);
 
@@ -153,8 +150,7 @@ async fn render_api(State(state): State<Arc<AppState>>) -> JsonResponse<Vec<Imag
         .get(0..5)
         .into_iter()
         .flatten()
-        .filter_map(|s| state.images.get(s))
-        .cloned()
+        .map(|t| (**t).clone())
         .collect();
 
     JsonResponse(thumbnails)
@@ -170,7 +166,17 @@ async fn render_style(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn render_index(State(state): State<Arc<AppState>>) -> HtmlResponse<String> {
     println!("Rendered index");
-    let context = Context::new();
+    let mut context = Context::new();
+    let mut thumbnails: Vec<Arc<ImageFile>> = state.image_list.clone();
+    thumbnails.sort_by_key(|a| a.modified_at);
+
+    let thumbnails: Vec<ImageFile> = thumbnails
+        .get(0..5)
+        .into_iter()
+        .flatten()
+        .map(|t| (**t).clone())
+        .collect();
+    context.insert("latest", &thumbnails);
     HtmlResponse(state.tera.render("index.tera", &context).unwrap())
 }
 
@@ -183,7 +189,7 @@ async fn render_view(
     let mut context = Context::new();
     let key = format!("./images/{}", path);
     if let Some(image) = state.images.get(&key) {
-        context.insert("image", &image);
+        context.insert("image", &**image);
     }
 
     let thumbnails: Vec<ImageFile> = state
@@ -191,8 +197,7 @@ async fn render_view(
         .get(0..5)
         .into_iter()
         .flatten()
-        .filter_map(|e| state.images.get(e))
-        .cloned()
+        .map(|t| (**t).clone())
         .collect();
     context.insert("thumbnails", &thumbnails);
 
@@ -243,4 +248,29 @@ async fn render_image(
         .header(header::CONTENT_TYPE, mime_type.to_string())
         .body(Body::from(content))
         .unwrap())
+}
+
+pub fn date_format_filter(value: &Value, args: Kwargs, _: &tera::State) -> TeraResult<String> {
+    // 1. Extract the incoming value (accepts string or numeric timestamp)
+    let date_str = match value.as_str() {
+        Some(s) => s,
+        None => {
+            return Err(tera::Error::message(
+                "Filter `date_format` expected a string value",
+            ));
+        }
+    };
+
+    // 2. Parse the string into a DateTime object
+    let date = DateTime::parse_from_rfc3339(date_str)
+        .or_else(|_| DateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S %z"))
+        .or_else(|_| DateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S")) // Fallback local representation
+        .map_err(|e| tera::Error::message(format!("Failed to parse date '{}': {}", date_str, e)))?;
+
+    // 3. Extract the `format` argument from the filter
+    let format_str = args.get::<&str>("format")?.unwrap();
+
+    // 4. Format and return
+    let formatted = date.format(&format_str).to_string();
+    Ok(formatted)
 }

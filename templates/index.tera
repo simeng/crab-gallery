@@ -7,6 +7,20 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  Crabs'R'Us
+  <div class="gallery-container">
+    Crabs'R'Us
+    <div id="thumbnails" class="thumbnail-list">
+      {% for i in latest %}
+      <div>
+        <div class="thumbnail-item">
+          <a href="/view/{{i.title}}">
+            <img loading="lazy" width="120" height="80" src="/images/{{i.title}}?w=120&h=80&fit=contain" />
+          </a>
+        </div>
+        <div class="label">{{ i.modified_at | date_format(format="%Y-%m-%d") }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
 </body>
 </html>
