@@ -172,7 +172,7 @@ async fn render_index(State(state): State<Arc<AppState>>) -> HtmlResponse<String
     println!("Rendered index");
     let mut context = Context::new();
     let mut thumbnails: Vec<Arc<ImageFile>> = state.image_list.clone();
-    thumbnails.sort_by_key(|a| a.modified_at);
+    thumbnails.sort_by_key(|a| std::cmp::Reverse(a.modified_at));
 
     let thumbnails: Vec<ImageFile> = thumbnails.iter().take(100).map(|t| (**t).clone()).collect();
     context.insert("latest", &thumbnails);
