@@ -110,6 +110,42 @@ body {
 
 .thumbnail-item.active {
   border-color: #3b82f6;
+  border-width: 3px;
   opacity: 1;
   transform: scale(1.03);
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.5);
+  border-style: solid;
+}
+
+.nav-buttons {
+  display: flex;
+  gap: 12px;
+  padding: 10px 5px;
+  background-color: #1a1a1a;
+  border-radius: 8px;
+}
+
+.nav-buttons a {
+  text-decoration: none;
+  color: inherit;
+}
+
+.nav-buttons button {
+  background-color: #333;
+  color: #fff;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.nav-buttons button:hover {
+  background-color: #444;
+  border-color: #555;
+}
+
+.nav-buttons button:focus {
+  outline: 2px solid #3b82f6;
 }

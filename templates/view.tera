@@ -14,10 +14,31 @@
             <img loading="lazy" width="{{image.width}}" height="{{image.height}}" id="featured" class="featured-image" src="/images/{{ image.title }}">
         </div>
 
-        <!-- Previous / Next Thumbnail List -->
-        <div id="thumbnails" class="thumbnail-list faded">
+    <div id="nav-buttons" class="nav-buttons">
+          <a href="/view/{{ sorted_list[0].title }}">
+            <button id="first-btn">First</button>
+          </a>
+          {% if prev_img %}
+          <a href="/view/{{ prev_img }}">
+            <button id="prev-btn">Prev</button>
+          </a>
+          {% endif %}
+          {% if next_img %}
+          <a href="/view/{{ next_img }}">
+            <button id="next-btn">Next</button>
+          </a>
+          {% endif %}
+          {% if last_img %}
+          <a href="/view/{{ last_img.title }}">
+            <button id="last-btn">Last</button>
+          </a>
+          {% endif %}
+        </div>
+
+   <!-- Adjacent Thumbnail List (6 images: 3 before, 3 after) -->
+        <div id="thumbnails" class="thumbnail-list">
           {% for i in thumbnails %}
-          <div class="thumbnail-item">
+          <div class="thumbnail-item {% if active_thumb_idx == loop.index %}active{% endif %}">
             <a href="/view/{{i.title}}">
               <img loading="lazy" src="/images/{{i.title}}?w=120&h=80&fit=contain" />
             </a>

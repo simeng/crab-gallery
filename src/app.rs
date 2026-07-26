@@ -47,3 +47,9 @@ pub struct ImageFile {
     pub height: i32,
     pub modified_at: Option<DateTime<Local>>,
 }
+
+#[derive(Deserialize, Debug, Serialize, Clone, Default)]
+pub struct ViewParams {
+    pub next: Option<bool>,
+    pub prev: Option<bool>,
+}
