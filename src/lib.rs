@@ -67,16 +67,67 @@ pub fn spawn_image_watcher(
 
         let mut watcher = match RecommendedWatcher::new(
             move |event: Result<notify::Event, notify::Error>| {
+                let now = std::time::Instant::now();
                 if let Ok(e) = event {
-                    if let EventKind::Create(_) = e.kind {
-                        for path in e.paths {
-                            if let Some(path_str) = path.to_str() {
-                                let ext = path.extension().map_or(String::new(), |e| {
-                                    e.to_string_lossy().to_ascii_lowercase()
-                                });
-                                if ext == "jpg" || ext == "jpeg" || ext == "png" {
-                                    println!("New image detected: {}", path_str);
+                    for path in e.paths {
+                        if let Some(path_str) = path.to_str() {
+                            let ext = path.extension().map_or(String::new(), |e| {
+                                e.to_string_lossy().to_ascii_lowercase()
+                            });
+
+                            match e.kind {
+                                EventKind::Create(_) => {
+                                    if ext == "jpg" || ext == "jpeg" || ext == "png" {
+                                        println!("New image detected: {}", path_str);
+                                        if let Ok(img) = libvips::VipsImage::new_from_file(path_str) {
+                                            let filename = path.file_name().map(|e| e.to_string_lossy().into_owned());
+                                            let image = Arc::new(ImageFile {
+                                                path: path_str.to_string(),
+                                                title: filename,
+                                                width: img.get_width(),
+                                                height: img.get_height(),
+                                                modified_at: Some(now.into()),
+                                            });
+                                            let mut images = images.write().await;
+                                            images.insert(path_str.to_string(), Arc::clone(&image));
+                                            let mut image_list = image_list.write().await;
+                                            image_list.push(Arc::clone(&image));
+                                        } else {
+                                            println!("err reading image: {}", path_str);
+                                        }
+                                    }
                                 }
+                                EventKind::Remove(_) => {
+                                    println!("Image removed: {}", path_str);
+                                    if let Some(img) = images.get(path_str) {
+                                        let mut images = images.write().await;
+                                        images.remove(path_str);
+                                        let mut image_list = image_list.write().await;
+                                        image_list.retain(|i| i.path != path_str);
+                                    }
+                                }
+                                EventKind::Modify(_) => {
+                                    if let Some(img) = images.get(path_str) {
+                                        if let Ok(meta) = metadata(path_str) {
+                                            let modified: DateTime<Local> = meta.modified().ok().map(|t| t.into()).unwrap();
+                                            if let Ok(img) = libvips::VipsImage::new_from_file(path_str) {
+                                                let width = img.get_width();
+                                                let height = img.get_height();
+                                                let filename = path.file_name().map(|e| e.to_string_lossy().into_owned());
+                                                let updated = ImageFile {
+                                                    path: img.path().unwrap_or(path_str).to_string(),
+                                                    title: filename,
+                                                    width,
+                                                    height,
+                                                    modified_at: Some(modified),
+                                                };
+                                                let mut images = images.write().await;
+                                                images.insert(path_str.to_string(), Arc::new(updated));
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -97,15 +148,5 @@ pub fn spawn_image_watcher(
         }
 
         println!("File watcher started for ./images");
-
-        // Hold the watcher alive by parking in a loop, periodically rescanning
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-            // Rescan on each tick to pick up any new images
-            let (new_images, new_list) = scan_images(&app);
-            *images.write().await = new_images;
-            *image_list.write().await = new_list;
-        }
     });
 }
