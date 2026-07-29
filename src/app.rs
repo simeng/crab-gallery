@@ -4,12 +4,13 @@ use chrono::{DateTime, Local};
 use libvips::VipsApp;
 use serde::{Deserialize, Serialize};
 use tera::Tera;
+use tokio::sync::RwLock;
 
 pub struct AppState {
-    pub vips: VipsApp,
+    pub vips: Arc<VipsApp>,
     pub tera: Tera,
-    pub images: HashMap<String, Arc<ImageFile>>,
-    pub image_list: Vec<Arc<ImageFile>>,
+    pub images: Arc<RwLock<HashMap<String, Arc<ImageFile>>>>,
+    pub image_list: Arc<RwLock<Vec<Arc<ImageFile>>>>,
 }
 
 #[derive(Deserialize, Debug, Serialize)]

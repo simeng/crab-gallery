@@ -13,8 +13,8 @@ use tera::Context;
 use crate::app::{AppState, FitOption, ImageFile, ResizeParams, ViewParams};
 
 pub async fn render_api(State(state): State<Arc<AppState>>) -> JsonResponse<Vec<ImageFile>> {
-    let thumbnails = state
-        .image_list
+    let image_list = state.image_list.read().await;
+    let thumbnails = image_list
         .get(0..5)
         .into_iter()
         .flatten()
@@ -35,7 +35,7 @@ pub async fn render_style(State(state): State<Arc<AppState>>) -> impl IntoRespon
 pub async fn render_index(State(state): State<Arc<AppState>>) -> HtmlResponse<String> {
     println!("Rendered index");
     let mut context = Context::new();
-    let mut thumbnails: Vec<Arc<ImageFile>> = state.image_list.clone();
+    let mut thumbnails: Vec<Arc<ImageFile>> = state.image_list.read().await.clone();
     thumbnails.sort_by_key(|a| std::cmp::Reverse(a.modified_at));
 
     let thumbnails: Vec<ImageFile> = thumbnails.iter().take(100).map(|t| (**t).clone()).collect();
@@ -49,17 +49,17 @@ pub async fn render_view(
     State(state): State<Arc<AppState>>,
 ) -> HtmlResponse<String> {
     println!("Rendered view/");
-    println!("List: {:?}", state.image_list);
     let mut context = Context::new();
     let key = format!("./images/{}", path);
     let mut current_index: Option<usize> = None;
-    let mut sorted_list: Vec<Arc<ImageFile>> = state.image_list.clone();
+    let mut sorted_list: Vec<Arc<ImageFile>> = state.image_list.read().await.clone();
     sorted_list.sort_by(|a, b| {
         let a_time = a.modified_at.unwrap_or(chrono::Local::now());
         let b_time = b.modified_at.unwrap_or(chrono::Local::now());
         b_time.cmp(&a_time)
     });
-    if let Some(image) = state.images.get(&key) {
+    let images_guard = state.images.read().await;
+    if let Some(image) = images_guard.get(&key) {
         context.insert("image", &**image);
         for (i, img) in sorted_list.iter().enumerate() {
             let img_title = img.title.clone().unwrap_or_default();

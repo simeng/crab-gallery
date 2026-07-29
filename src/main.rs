@@ -1,16 +1,14 @@
-use std::{collections::HashMap, fs::metadata, sync::Arc};
+use std::sync::Arc;
 
 use crab_gallery::controllers::{
     render_api, render_image, render_index, render_style, render_view,
 };
 
-use crab_gallery::app::{AppState, ImageFile};
+use crab_gallery::app::AppState;
 
 use axum::{Router, routing::get};
-use chrono::{DateTime, Local};
 use libvips::VipsApp;
 use tera::{Kwargs, Tera, TeraResult, Value};
-use walkdir::{DirEntry, WalkDir};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,7 +17,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.concurrency_set(2);
 
     let mut tera = Tera::default();
-    // tera.add_template_files(vec![("./templates/index.tera", Some("index"))])?;
     tera.register_filter("date_format", date_format_filter);
     tera.load_from_glob("templates/**/*").unwrap();
 
@@ -28,52 +25,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Vips version: {}", app.version_string()?);
 
-    let image_files = WalkDir::new("./images");
-    let mut images: HashMap<String, Arc<ImageFile>> = HashMap::new();
-    let mut image_list: Vec<Arc<ImageFile>> = vec![];
+    let (images, image_list) = crab_gallery::scan_images(&app);
+    println!("Loaded {} images", image_list.len());
 
-    for i in image_files {
-        let entry: DirEntry = i?;
-        let path = entry.path();
-        if entry.file_type().is_file()
-            && path.extension().map_or(false, |e| {
-                e.to_ascii_lowercase() == "jpg"
-                    || e.to_ascii_lowercase() == "jpeg"
-                    || e.to_ascii_lowercase() == "png"
-            })
-        {
-            if let Some(path_str) = path.to_str() {
-                match libvips::VipsImage::new_from_file(path.to_str().unwrap()) {
-                    Ok(i) => {
-                        let filename = path.file_name().map(|e| e.to_string_lossy().into_owned());
-                        let meta = metadata(path_str)?;
-                        let modified_at: Option<DateTime<Local>> =
-                            meta.modified().ok().map(|t| t.into());
-
-                        image_list.push(Arc::new(ImageFile {
-                            path: path_str.to_string(),
-                            title: filename,
-                            width: i.get_width(),
-                            height: i.get_height(),
-                            modified_at,
-                        }));
-                    }
-                    Err(e) => println!("err: {}", e),
-                }
-            }
-        }
-    }
-    for image in &image_list {
-        images.insert(image.path.clone(), Arc::clone(image));
-    }
-    println!("images: {:?}", images);
+    let app_arc = Arc::new(app);
 
     let shared_state = Arc::new(AppState {
-        vips: app,
+        vips: app_arc.clone(),
         tera: tera,
-        images: images,
-        image_list: image_list,
+        images: Arc::new(tokio::sync::RwLock::new(images)),
+        image_list: Arc::new(tokio::sync::RwLock::new(image_list)),
     });
+
+    crab_gallery::spawn_image_watcher(
+        app_arc,
+        shared_state.images.clone(),
+        shared_state.image_list.clone(),
+    );
 
     let router = Router::new()
         .route("/", get(render_index))
@@ -92,7 +60,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn date_format_filter(value: &Value, args: Kwargs, _: &tera::State) -> TeraResult<String> {
-    // 1. Extract the incoming value (accepts string or numeric timestamp)
     let date_str = match value.as_str() {
         Some(s) => s,
         None => {
@@ -102,16 +69,13 @@ pub fn date_format_filter(value: &Value, args: Kwargs, _: &tera::State) -> TeraR
         }
     };
 
-    // 2. Parse the string into a DateTime object
-    let date = DateTime::parse_from_rfc3339(date_str)
-        .or_else(|_| DateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S %z"))
-        .or_else(|_| DateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S")) // Fallback local representation
+    let date = chrono::DateTime::parse_from_rfc3339(date_str)
+        .or_else(|_| chrono::DateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S %z"))
+        .or_else(|_| chrono::DateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S"))
         .map_err(|e| tera::Error::message(format!("Failed to parse date '{}': {}", date_str, e)))?;
 
-    // 3. Extract the `format` argument from the filter
     let format_str = args.get::<&str>("format")?.unwrap();
 
-    // 4. Format and return
     let formatted = date.format(&format_str).to_string();
     Ok(formatted)
 }
