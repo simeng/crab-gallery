@@ -100,9 +100,13 @@ pub fn spawn_image_watcher(
                         let modified_at = path.metadata().ok().and_then(|m| {
                             m.modified().ok().map(Into::<DateTime<Local>>::into)
                         });
-                        let path_str = match path.to_str() {
-                            Some(s) => s.to_string(),
-                            None => continue,
+                        let images_dir = match std::fs::canonicalize("./images") {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        };
+                        let path_str = match path.strip_prefix(&images_dir).ok().and_then(|rel| rel.to_str()) {
+                            Some(rel) => format!("./images/{}", rel),
+                            None => path.to_str().map(String::from).unwrap_or_default(),
                         };
                         let image_file = Arc::new(ImageFile {
                             path: path_str.clone(),
@@ -136,16 +140,22 @@ pub fn spawn_image_watcher(
                 EventKind::Remove(_) => {
                     for path in &evt.paths {
                         let title = path.file_name().map(|e| e.to_string_lossy().into_owned());
-                        let image_path = path.to_str().map(|s| s.to_string());
                         let images2 = Arc::clone(&images);
                         let image_list2 = Arc::clone(&image_list);
                         let title2 = title.clone();
                         handle.spawn(async move {
                             let mut map = images2.write().await;
                             let mut list = image_list2.write().await;
-                            if let Some(p) = &image_path {
-                                map.remove(p);
-                                list.retain(|img| img.path != *p);
+                            if let Some(ref filename) = title {
+                                let matched: Vec<String> = map
+                                    .iter()
+                                    .filter(|(_, img)| img.title.as_deref() == Some(filename.as_str()))
+                                    .map(|(k, _)| k.clone())
+                                    .collect();
+                                for key in matched {
+                                    map.remove(&key);
+                                    list.retain(|img| img.title.as_deref() != Some(filename.as_str()));
+                                }
                                 eprintln!("Removed image: {}", title2.unwrap_or_default());
                             }
                         });
@@ -172,9 +182,12 @@ pub fn spawn_image_watcher(
                         None => return,
                     };
 
-
+                    let images_dir = match std::fs::canonicalize("./images") {
+                        Ok(d) => d,
+                        Err(_) => return,
+                    };
                     let image_path = match &evt.paths.first() {
-                        Some(p) => p.to_str().map(|s| s.to_string()),
+                        Some(p) => p.strip_prefix(&images_dir).ok().and_then(|rel| rel.to_str()).map(|rel| format!("./images/{}", rel)),
                         None => None,
                     };
 
