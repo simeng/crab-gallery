@@ -5,6 +5,7 @@ use crab_gallery::controllers::{
 };
 
 use crab_gallery::app::AppState;
+use crab_gallery::spawn_image_watcher;
 
 use axum::{Router, routing::get};
 use libvips::VipsApp;
@@ -37,11 +38,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         image_list: Arc::new(tokio::sync::RwLock::new(image_list)),
     });
 
-    crab_gallery::spawn_image_watcher(
-        app_arc,
+        // Spawn file watcher to handle image file events
+    let _watcher = spawn_image_watcher(
+        app_arc.clone(),
+        tokio::runtime::Handle::current(),
         shared_state.images.clone(),
         shared_state.image_list.clone(),
     );
+
+
+
+
+
+
 
     let router = Router::new()
         .route("/", get(render_index))
