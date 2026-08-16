@@ -1,50 +1,110 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>crab gallery</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ image.title }} — crab gallery</title>
   <link rel="stylesheet" href="/style.css" />
+  {% if next_title %}
+  <link rel="preload" as="image" href="/images/{{ next_title }}?w={{ main_w }}" />
+  {% endif %}
 </head>
-<body>
+<body data-prev="{{ prev_title | default(value='') }}"
+      data-next="{{ next_title | default(value='') }}">
 
-    <div class="gallery-container">
-        <!-- Big In-Focus Image -->
-        <div class="featured-wrapper">
-            <img loading="lazy" width="{{image.width}}" height="{{image.height}}" id="featured" class="featured-image" src="/images/{{ image.title }}">
-        </div>
-
-    <div id="nav-buttons" class="nav-buttons">
-          <a href="/view/{{ sorted_list[0].title }}">
-            <button id="first-btn">First</button>
-          </a>
-          {% if prev_img %}
-          <a href="/view/{{ prev_img }}">
-            <button id="prev-btn">Prev</button>
-          </a>
-          {% endif %}
-          {% if next_img %}
-          <a href="/view/{{ next_img }}">
-            <button id="next-btn">Next</button>
-          </a>
-          {% endif %}
-          {% if last_img %}
-          <a href="/view/{{ last_img.title }}">
-            <button id="last-btn">Last</button>
-          </a>
-          {% endif %}
-        </div>
-
-   <!-- Adjacent Thumbnail List (6 images: 3 before, 3 after) -->
-        <div id="thumbnails" class="thumbnail-list">
-          {% for i in thumbnails %}
-          <div class="thumbnail-item {% if active_thumb_idx == loop.index %}active{% endif %}">
-            <a href="/view/{{i.title}}">
-              <img loading="lazy" src="/images/{{i.title}}?w=120&h=80&fit=contain" />
-            </a>
-          </div>
-          {% endfor %}
-        </div>
+  <div class="viewer">
+    <!-- Featured image: auto-scaled to fit (served pre-scaled at {{ main_w }}px) -->
+    <div id="featured-wrap" class="featured-wrapper"
+         style="aspect-ratio: {{ image.width }} / {{ image.height }};">
+      <img id="featured" class="featured-image"
+           width="{{ image.width }}" height="{{ image.height }}"
+           src="/images/{{ image.title }}?w={{ main_w }}" alt="{{ image.title }}" />
     </div>
+
+    <!-- Toolbar -->
+    <div id="nav-buttons" class="nav-buttons">
+      <a href="/view/{{ first_title }}" title="First"><button>⏮ First</button></a>
+      {% if prev_title %}
+      <a href="/view/{{ prev_title }}" title="Previous (←)"><button>← Prev</button></a>
+      {% else %}
+      <span><button disabled>← Prev</button></span>
+      {% endif %}
+      {% if next_title %}
+      <a href="/view/{{ next_title }}" title="Next (→)"><button>Next →</button></a>
+      {% else %}
+      <span><button disabled>Next →</button></span>
+      {% endif %}
+      <a href="/view/{{ last_title }}" title="Last"><button>Last ⏭</button></a>
+
+      <span class="spacer"></span>
+      <span class="position">{{ current_index }} / {{ total }}</span>
+      <button id="fullscreen-btn" title="Toggle fullscreen (F)">⛶ Fullscreen</button>
+      <a id="original-link" href="/images/{{ image.title }}?orig" target="_blank"
+         title="Open full-resolution source in a new tab">🖼 Original</a>
+    </div>
+
+    <!-- Thumbnail strip: 3 before + current + 3 after -->
+    <div id="thumbnails" class="thumbnail-list">
+      {% for i in thumbnails %}
+      <div class="thumbnail-item {% if active_thumb_idx == loop.index %}active{% endif %}">
+        <a href="/view/{{ i.title }}">
+          <img loading="lazy" width="120" height="80"
+               src="/images/{{ i.title }}?w=240" alt="{{ i.title }}" />
+        </a>
+      </div>
+      {% endfor %}
+    </div>
+
+    <footer class="viewer-footer">
+      {{ image.width }} × {{ image.height }}
+      {%- if image.modified_at -%}
+      · {{ image.modified_at | date_format(format="%Y-%m-%d %H:%M") }}
+      {%- endif -%}
+    </footer>
+  </div>
+
+  <script>
+    (function () {
+      const body = document.body;
+      const wrap = document.getElementById('featured-wrap');
+
+      // Keyboard navigation: arrows browse, F toggles fullscreen.
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowLeft' && body.dataset.prev) {
+          window.location.href = '/view/' + encodeURIComponent(body.dataset.prev);
+        } else if (e.key === 'ArrowRight' && body.dataset.next) {
+          window.location.href = '/view/' + encodeURIComponent(body.dataset.next);
+        } else if (e.key === 'f' || e.key === 'F') {
+          toggleFullscreen();
+        }
+      });
+
+      function toggleFullscreen() {
+        if (document.fullscreenElement) {
+          document.exitFullscreen();
+        } else {
+          wrap.requestFullscreen().catch(() => {});
+        }
+      }
+      document.getElementById('fullscreen-btn').addEventListener('click', toggleFullscreen);
+      document.addEventListener('fullscreenchange', () => {
+        const btn = document.getElementById('fullscreen-btn');
+        btn.textContent = document.fullscreenElement ? '⛶ Exit Fullscreen' : '⛶ Fullscreen';
+      });
+
+      // Prefetch adjacent main images + thumbnails for instant navigation.
+      [body.dataset.prev, body.dataset.next].forEach((t) => {
+        if (!t) return;
+        const im = new Image();
+        im.src = '/images/' + encodeURIComponent(t) + '?w={{ main_w }}';
+        const thumb = new Image();
+        thumb.src = '/images/' + encodeURIComponent(t) + '?w=240';
+      });
+
+      // Keep the active thumbnail centered in the strip.
+      const active = document.querySelector('.thumbnail-item.active');
+      if (active) active.scrollIntoView({ inline: 'center', block: 'nearest' });
+    })();
+  </script>
 </body>
 </html>

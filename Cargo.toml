@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.8.9", features = ["macros"] }
+axum = { version = "0.8.9", features = ["macros", "multipart"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 libvips = "2.3.0"
 mimetype-detector = "0.3.10"

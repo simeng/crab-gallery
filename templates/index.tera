@@ -1,26 +1,35 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>crab gallery</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <header class="page-header">
+    <h1>Crabs'R'Us</h1>
+    <span class="count">{{ count }} image{%- if count != 1 -%}s{%- endif -%}</span>
+  </header>
+
   <div class="gallery-container">
-    Crabs'R'Us
-    <div class="latest-list">
+    {% if count == 0 %}
+    <p class="empty">No images yet. Drop files into <code>./images</code> or upload them to <code>/upload</code>.</p>
+    {% else %}
+    <main class="thumb-grid">
       {% for i in latest %}
-      <div>
-        <div class="thumbnail-item">
-          <a href="/view/{{i.title}}">
-            <img loading="lazy" width="120" height="80" src="/images/{{i.title}}?w=120&h=80&fit=contain" />
-          </a>
+      <a class="grid-item" href="/view/{{ i.title }}" title="{{ i.title }}">
+        <div class="grid-thumb">
+          <img loading="lazy" width="{{ i.width }}" height="{{ i.height }}"
+               src="/images/{{ i.title }}?w=320" alt="{{ i.title }}" />
         </div>
+        {% if i.modified_at %}
         <div class="label">{{ i.modified_at | date_format(format="%Y-%m-%d") }}</div>
-      </div>
+        {% endif %}
+      </a>
       {% endfor %}
-    </div>
+    </main>
+    {% endif %}
   </div>
 </body>
 </html>
