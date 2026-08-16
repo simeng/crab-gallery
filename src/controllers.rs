@@ -73,9 +73,9 @@ pub async fn render_view(
     let prev_img = if current_idx > 0 { sorted.get(current_idx - 1).cloned() } else { None };
     let next_img = sorted.get(current_idx + 1).cloned();
 
-    // Thumbnail strip: 3 before + current + 3 after.
-    let start = if current_idx > 2 { current_idx - 2 } else { 0 };
-    let end = (current_idx + 4).min(total);
+    // Thumbnail strip: 4 before + current + 4 after (fills the image width).
+    let start = if current_idx > 4 { current_idx - 4 } else { 0 };
+    let end = (current_idx + 5).min(total);
     let thumbnails: Vec<ImageFile> = sorted[start..end].iter().map(|t| (**t).clone()).collect();
     let active_thumb_idx = (current_idx - start + 1) as i32; // 1-indexed for tera loop
 

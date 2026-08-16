@@ -12,38 +12,42 @@
 <body data-prev="{{ prev_title | default(value='') }}"
       data-next="{{ next_title | default(value='') }}">
 
+  <header class="page-header viewer-header">
+    <a class="logo" href="/" title="Back to gallery">Crabs'R'Us</a>
+  </header>
+
   <div class="viewer">
-    <!-- Featured image: auto-scaled to fit (served pre-scaled at {{ main_w }}px) -->
-    <div id="featured-wrap" class="featured-wrapper"
-         style="aspect-ratio: {{ image.width }} / {{ image.height }};">
+    <!-- Featured image: auto-scaled (served pre-scaled at {{ main_w }}px),
+         centered inside a fixed-height container so layout height stays stable -->
+    <div id="featured-wrap" class="featured-wrapper">
       <img id="featured" class="featured-image"
-           width="{{ image.width }}" height="{{ image.height }}"
            src="/images/{{ image.title }}?w={{ main_w }}" alt="{{ image.title }}" />
     </div>
 
-    <!-- Toolbar -->
+    <!-- Toolbar: enabled links and disabled buttons share the exact same
+         button markup so widths never shift when state changes. -->
     <div id="nav-buttons" class="nav-buttons">
-      <a href="/view/{{ first_title }}" title="First"><button>⏮ First</button></a>
+      <span><a href="/view/{{ first_title }}" title="First"><button>⏮ First</button></a></span>
       {% if prev_title %}
-      <a href="/view/{{ prev_title }}" title="Previous (←)"><button>← Prev</button></a>
+      <span><a href="/view/{{ prev_title }}" title="Previous (←)"><button>← Prev</button></a></span>
       {% else %}
       <span><button disabled>← Prev</button></span>
       {% endif %}
       {% if next_title %}
-      <a href="/view/{{ next_title }}" title="Next (→)"><button>Next →</button></a>
+      <span><a href="/view/{{ next_title }}" title="Next (→)"><button>Next →</button></a></span>
       {% else %}
       <span><button disabled>Next →</button></span>
       {% endif %}
-      <a href="/view/{{ last_title }}" title="Last"><button>Last ⏭</button></a>
+      <span><a href="/view/{{ last_title }}" title="Last"><button>Last ⏭</button></a></span>
 
       <span class="spacer"></span>
       <span class="position">{{ current_index }} / {{ total }}</span>
       <button id="fullscreen-btn" title="Toggle fullscreen (F)">⛶ Fullscreen</button>
-      <a id="original-link" href="/images/{{ image.title }}?orig" target="_blank"
+      <a id="original-link" class="btn" href="/images/{{ image.title }}?orig" target="_blank"
          title="Open full-resolution source in a new tab">🖼 Original</a>
     </div>
 
-    <!-- Thumbnail strip: 3 before + current + 3 after -->
+    <!-- Thumbnail strip: 4 before + current + 4 after -->
     <div id="thumbnails" class="thumbnail-list">
       {% for i in thumbnails %}
       <div class="thumbnail-item {% if active_thumb_idx == loop.index %}active{% endif %}">

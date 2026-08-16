@@ -26,9 +26,20 @@ pub struct ImageParams {
     /// Request a scaled preview at this width (px). Omit to get the raw source.
     #[serde(default)]
     pub w: Option<i32>,
-    /// Explicitly request the raw, unmodified source file.
+    /// Explicitly request the raw, unmodified source file. Accepted as a bare
+    /// `?orig` (no value) or `?orig=true`; `false`/`0` fall through to normal
+    /// handling. (A valueless param can't deserialize into `Option<bool>`.)
     #[serde(default)]
-    pub orig: Option<bool>,
+    pub orig: Option<String>,
+}
+
+impl ImageParams {
+    pub fn wants_original(&self) -> bool {
+        self.orig
+            .as_deref()
+            .map(|s| s != "false" && s != "0")
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Deserialize, Debug, Serialize, Clone, Default)]
