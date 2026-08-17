@@ -59,14 +59,25 @@ code paths that insert into the index, keep them idempotent the same way.
   `prev_title`/`next_title`) rather than omitting keys.
 - **axum 0.8 multipart**: `Field` has no `next_chunk()` (it's a stream; use
   `field.bytes()` for this app). The 2 MB default body limit is raised to
-  64 MB via the `DefaultBodyLimit::max(...)` layer in `main.rs` — keep it,
-  photos are larger than 2 MB.
+  128 MB (`controllers::MAX_UPLOAD_BODY_BYTES`, used by both the
+  `DefaultBodyLimit` layer in `main.rs` and `axum::body::to_bytes` in the
+  upload handler) — keep it, photos are larger than 2 MB, and 128MB allows
+  base64 inflation (~4/3) over the 64MB per-image cap. `POST /upload` accepts
+  **two** formats, dispatched on `Content-Type` inside one handler (the body
+  is read via `Body` first because axum's extractors can't be `or`-ed):
+  `multipart/form-data` (parsed with `multer` directly — axum 0.8's
+  `Multipart` has no public constructor) and
+  `application/x-www-form-urlencoded` (`file_name`, `key`, `image_data` =
+  base64-encoded image bytes, parsed with `form_urlencoded`). Both paths
+  funnel into `save_image_bytes()`, which keeps the 64MB per-file check and
+  the path-deduped insert.
 - Upload filenames must go through `sanitize_filename()` (basename only,
   `[A-Za-z0-9._-]`) and land via `unique_image_path()` (timestamp suffix on
   collision) to avoid path traversal and clobbering.
 - Upload API key: `--api-key KEY` CLI flag or `CRAB_GALLERY_API_KEY` env var;
-  accepted as `X-Api-Key` header or `Authorization: Bearer <key>`. No key
-  configured ⇒ uploads disabled (503).
+  accepted as `X-Api-Key` header, `Authorization: Bearer <key>`, or — for the
+  form-urlencoded format — the `key` form field. No key configured ⇒ uploads
+  disabled (503).
 - `render_view` always returns the **full** list of keys the template uses
   and positions are 1-indexed in the UI but 0-indexed in Rust.
 

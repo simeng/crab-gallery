@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use crab_gallery::app::{AppState, PreviewCache};
 use crab_gallery::controllers::{
     render_api, render_image, render_index, render_style, render_view, upload_images,
+    MAX_UPLOAD_BODY_BYTES,
 };
 use crab_gallery::{scan_images, spawn_image_watcher};
 
@@ -72,8 +73,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/images/{*path}", get(render_image))
         .route("/api/images", get(render_api))
         .route("/upload", post(upload_images))
-        // axum's default request body limit is 2MB — raise it for photo uploads.
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
+        // axum's default request body limit is 2MB — raise it for photo
+        // uploads (see MAX_UPLOAD_BODY_BYTES).
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES))
         .with_state(shared_state);
 
     println!("Listening on: {}", bind_string);

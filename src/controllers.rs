@@ -1,11 +1,17 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
-    body::Body,
-    extract::{multipart::Multipart, Path, Query, State},
+    body::{Body, Bytes},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{Html as HtmlResponse, IntoResponse, Json as JsonResponse, Response},
 };
+use base64::Engine;
+
+/// Max total request body for `POST /upload` (raw bytes). Larger than the
+/// 64MB per-image cap to allow for base64 inflation (~4/3) in the
+/// form-urlencoded format.
+pub const MAX_UPLOAD_BODY_BYTES: usize = 128 * 1024 * 1024;
 use mimetype_detector::detect_file;
 use tera::Context;
 
@@ -203,32 +209,62 @@ pub async fn render_image(
         .unwrap())
 }
 
-/// POST /upload — multipart form upload, protected by a configurable API key.
+/// POST /upload — image upload, protected by a configurable API key.
+///
+/// Two request formats are supported (chosen by `Content-Type`):
+/// - `multipart/form-data`: one or more file parts.
+/// - `application/x-www-form-urlencoded`: `file_name` (target filename),
+///   `key` (API key, alternative to the `X-Api-Key` / `Authorization`
+///   headers) and `image_data` (base64-encoded image bytes).
+///
 /// Files are saved into `./images` and indexed immediately (the watcher also
 /// fires for them; inserts are path-deduped so this is idempotent).
 pub async fn upload_images(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
-    mut multipart: Multipart,
+    body: Body,
 ) -> Result<JsonResponse<UploadResponse>, (StatusCode, String)> {
-    let api_key = state.api_key.as_ref().ok_or((
-        StatusCode::SERVICE_UNAVAILABLE,
-        "uploads disabled: no API key configured (use --api-key or CRAB_GALLERY_API_KEY)".into(),
-    ))?;
+    let bytes = axum::body::to_bytes(body, MAX_UPLOAD_BODY_BYTES)
+        .await
+        .map_err(|e| {
+            let too_large = std::error::Error::source(&e)
+                .map(|s| s.is::<http_body_util::LengthLimitError>())
+                .unwrap_or(false);
+            if too_large {
+                (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!("request body exceeds the {}MB limit", MAX_UPLOAD_BODY_BYTES / 1024 / 1024),
+                )
+            } else {
+                (StatusCode::BAD_REQUEST, format!("read error: {}", e))
+            }
+        })?;
 
-    let provided = headers
-        .get("x-api-key")
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .or_else(|| {
-            headers
-                .get(header::AUTHORIZATION)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "))
-        })
         .unwrap_or("");
-    if provided.is_empty() || provided != api_key {
-        return Err((StatusCode::UNAUTHORIZED, "invalid or missing API key".into()));
+    if content_type.contains("multipart/form-data") {
+        upload_multipart(state, content_type, &bytes).await
+    } else {
+        upload_form(state, &headers, &bytes).await
     }
+}
+
+async fn upload_multipart(
+    state: Arc<AppState>,
+    content_type: &str,
+    bytes: &Bytes,
+) -> Result<JsonResponse<UploadResponse>, (StatusCode, String)> {
+    let boundary = multer::parse_boundary(content_type).map_err(|e| {
+        (StatusCode::BAD_REQUEST, format!("invalid multipart content-type: {e:?}"))
+    })?;
+    // The body was already fully collected (and size-capped by the
+    // DefaultBodyLimit layer), so feed it to multer as a single-chunk stream.
+    let stream = futures_util::stream::iter(vec![Ok::<Bytes, std::io::Error>(
+        bytes.clone(),
+    )]);
+    let mut multipart = multer::Multipart::new(stream, boundary);
 
     let mut saved = Vec::new();
     let mut errors = Vec::new();
@@ -240,53 +276,138 @@ pub async fn upload_images(
     {
         // Text form fields have no filename; only accept file parts.
         let Some(raw_name) = field.file_name().map(String::from) else { continue };
-        let base = sanitize_filename(&raw_name);
-        if !is_supported_image_ext(&base) {
-            errors.push(format!("\"{}\": unsupported type (jpg/jpeg/png only)", raw_name));
-            continue;
-        }
-
-        // Buffer the part (local gallery; reject anything over 64MB).
-        let target = unique_image_path(&base);
-        tokio::fs::create_dir_all(IMAGE_DIR).await.map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("cannot create image dir: {}", e))
-        })?;
-        let bytes = field
+        let part = field
             .bytes()
             .await
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("read error: {}", e)))?;
-        if bytes.len() > 64 * 1024 * 1024 {
-            errors.push(format!("\"{}\": exceeds 64MB limit", raw_name));
-            continue;
-        }
-
-        tokio::fs::write(&target, &bytes[..])
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("write error: {}", e)))?;
-
-        // Index immediately so the image is available without waiting on the watcher.
-        let target_str = target.clone();
-        let info = tokio::task::spawn_blocking(move || load_image_info(&target_str))
-            .await
-            .unwrap_or(None);
-        match info {
-            Some(image_file) => {
-                let mut map = state.images.write().await;
-                let mut list = state.image_list.write().await;
-                list.retain(|i| i.path != image_file.path); // dedupe watcher race
-                map.insert(image_file.path.clone(), Arc::clone(&image_file));
-                list.push(image_file);
-                sort_image_list(&mut list);
-                saved.push(file_name_of(&target));
-            }
-            None => {
-                let _ = tokio::fs::remove_file(&target).await;
-                errors.push(format!("\"{}\": file could not be decoded as an image", raw_name));
-            }
+        match save_image_bytes(&state, &raw_name, part.to_vec()).await {
+            Ok(name) => saved.push(name),
+            Err(msg) => errors.push(msg),
         }
     }
 
     Ok(JsonResponse(UploadResponse { saved, errors }))
+}
+
+async fn upload_form(
+    state: Arc<AppState>,
+    headers: &HeaderMap,
+    bytes: &Bytes,
+) -> Result<JsonResponse<UploadResponse>, (StatusCode, String)> {
+    let api_key = state.api_key.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "uploads disabled: no API key configured (use --api-key or CRAB_GALLERY_API_KEY)".into(),
+    ))?;
+
+    // Percent-decoded key/value pairs; drop empty values (e.g. a trailing
+    // "&=") so they can't shadow real fields.
+    let form: HashMap<String, String> = form_urlencoded::parse(bytes.as_ref())
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .filter(|(_, v)| !v.is_empty())
+        .collect();
+
+    // API key: form field `key` (preferred for this format) or the usual
+    // `X-Api-Key` / `Authorization: Bearer` headers.
+    let provided = form
+        .get("key")
+        .map(String::as_str)
+        .or_else(|| {
+            headers
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+                .or_else(|| {
+                    headers
+                        .get(header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.strip_prefix("Bearer "))
+                })
+        })
+        .unwrap_or("");
+    if provided.is_empty() || provided != api_key {
+        return Err((StatusCode::UNAUTHORIZED, "invalid or missing API key".into()));
+    }
+
+    let image_data = form.get("image_data").ok_or((
+        StatusCode::BAD_REQUEST,
+        "missing 'image_data' field (expected base64-encoded image bytes)".into(),
+    ))?;
+    let raw_name = form
+        .get("file_name")
+        .filter(|s| !s.trim().is_empty())
+        .map(String::as_str)
+        .unwrap_or("upload.jpg");
+
+    let decoded =
+        match base64::engine::general_purpose::STANDARD.decode(image_data.as_bytes()) {
+            Ok(b) => b,
+            // Tolerate base64 variants that drop the padding.
+            Err(_) => base64::engine::general_purpose::STANDARD_NO_PAD
+                .decode(image_data.as_bytes())
+                .map_err(|e| (
+                    StatusCode::BAD_REQUEST,
+                    format!("'image_data' is not valid base64: {}", e),
+                ))?,
+        };
+
+    match save_image_bytes(&state, raw_name, decoded).await {
+        Ok(name) => Ok(JsonResponse(UploadResponse { saved: vec![name], errors: vec![] })),
+        Err(msg) => {
+            let status = if msg.contains("unsupported type") {
+                StatusCode::UNSUPPORTED_MEDIA_TYPE
+            } else if msg.contains("64MB") {
+                StatusCode::PAYLOAD_TOO_LARGE
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            Err((status, msg))
+        }
+    }
+}
+
+/// Validate, persist and index one uploaded image; returns the saved filename.
+async fn save_image_bytes(
+    state: &Arc<AppState>,
+    raw_name: &str,
+    data: Vec<u8>,
+) -> Result<String, String> {
+    let base = sanitize_filename(raw_name);
+    if !is_supported_image_ext(&base) {
+        return Err(format!("\"{}\": unsupported type (jpg/jpeg/png only)", raw_name));
+    }
+    if data.len() > 64 * 1024 * 1024 {
+        return Err(format!("\"{}\": exceeds 64MB limit", raw_name));
+    }
+
+    let target = unique_image_path(&base);
+    tokio::fs::create_dir_all(IMAGE_DIR)
+        .await
+        .map_err(|e| format!("cannot create image dir: {}", e))?;
+    tokio::fs::write(&target, &data[..])
+        .await
+        .map_err(|e| format!("write error: {}", e))?;
+
+    let state = Arc::clone(state);
+
+    // Index immediately so the image is available without waiting on the watcher.
+    let target_str = target.clone();
+    let info = tokio::task::spawn_blocking(move || load_image_info(&target_str))
+        .await
+        .unwrap_or(None);
+    match info {
+        Some(image_file) => {
+            let mut map = state.images.write().await;
+            let mut list = state.image_list.write().await;
+            list.retain(|i| i.path != image_file.path); // dedupe watcher race
+            map.insert(image_file.path.clone(), Arc::clone(&image_file));
+            list.push(image_file);
+            sort_image_list(&mut list);
+            Ok(file_name_of(&target))
+        }
+        None => {
+            let _ = tokio::fs::remove_file(&target).await;
+            Err(format!("\"{}\": file could not be decoded as an image", raw_name))
+        }
+    }
 }
 
 fn file_name_of(path: &str) -> String {
