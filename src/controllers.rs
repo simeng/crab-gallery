@@ -328,7 +328,6 @@ async fn upload_multipart(
         let Some(raw_name) = field.file_name().map(String::from) else {
             continue;
         };
-        let part = field;
         let base = sanitize_filename(&raw_name);
         if !is_supported_image_ext(&base) {
             errors.push(format!(
@@ -338,22 +337,12 @@ async fn upload_multipart(
             continue;
         }
 
-        // Buffer the part (local gallery; reject anything over 64MB).
-        let upload_dir = state.upload_dir.to_string_lossy().into_owned();
-        let target = unique_image_path(&upload_dir, &base);
-        tokio::fs::create_dir_all(&state.upload_dir)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("cannot create upload dir: {}", e),
-                )
-            })?;
+        // Buffer the part (save_image_bytes enforces the 64MB cap).
         let bytes = field
             .bytes()
             .await
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("read error: {}", e)))?;
-        match save_image_bytes(&state, &raw_name, part.to_vec()).await {
+        match save_image_bytes(&state, &raw_name, bytes.to_vec()).await {
             Ok(name) => saved.push(name),
             Err(msg) => errors.push(msg),
         }
@@ -461,10 +450,11 @@ async fn save_image_bytes(
         return Err(format!("\"{}\": exceeds 64MB limit", raw_name));
     }
 
-    let target = unique_image_path(&base);
-    tokio::fs::create_dir_all(IMAGE_DIR)
+    let upload_dir = state.upload_dir.to_string_lossy().into_owned();
+    let target = unique_image_path(&upload_dir, &base);
+    tokio::fs::create_dir_all(&state.upload_dir)
         .await
-        .map_err(|e| format!("cannot create image dir: {}", e))?;
+        .map_err(|e| format!("cannot create upload dir: {}", e))?;
     tokio::fs::write(&target, &data[..])
         .await
         .map_err(|e| format!("write error: {}", e))?;
