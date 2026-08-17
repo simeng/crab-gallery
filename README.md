@@ -1,7 +1,8 @@
 # crab-gallery
 
-A fast, self-contained image gallery. It keeps an **in-memory index** of
-`./images`, live-updates it with a file watcher (no polling), and serves a
+A fast, self-contained image gallery. It keeps an **in-memory index** of one
+or more image folders (default `./images`), live-updates it with a file
+watcher (no polling), and serves a
 browser UI where you can quickly browse, jump around, view fullscreen, and
 open full-resolution originals.
 
@@ -38,6 +39,27 @@ CRAB_GALLERY_API_KEY=mysecret cargo run    # same, via environment variable
 Then open <http://localhost:8033>.
 
 > Requires libvips to be installed on the system.
+
+## Configuration (CLI flags)
+
+```text
+-d, --dirs <DIR>        Image folder(s) to include (repeatable) [default: ./images]
+    --upload-dir <DIR>  Folder that POST /upload saves into [default: first --dir]
+    --host <HOST>       Address to bind [default: 0.0.0.0]
+    --port <PORT>       Port to bind [default: 8033]
+    --api-key <KEY>     Upload API key (or CRAB_GALLERY_API_KEY); unset = uploads off
+```
+
+Examples:
+
+```sh
+# two photo folders on a LAN port, uploads into an inbox folder
+crab-gallery -d ./images -d ./vacation --upload-dir ./inbox \
+             --host 0.0.0.0 --port 9000 --api-key mysecret
+```
+
+With multiple `--dir`s, URLs use the bare filename and the **first** match
+wins if two folders contain the same filename.
 
 ## Endpoints
 
@@ -76,6 +98,10 @@ the headers works (e.g. a simple web form posting to `/upload`).
 
 - **Rust**: axum (web) + tera (templates) + libvips (image scaling) +
   notify (file watching) + tokio (async runtime).
+- **Templates** are compiled into the binary as a fallback. At startup, if
+  `templates/` exists next to the working directory its files are used (live
+  editing without recompiling); any template missing on disk is served from
+  the embedded copy.
 - The in-memory index is `HashMap<path, ImageFile>` + a sorted list behind
   `tokio::sync::RwLock`. Canonical path keys are `./images/<file>`.
 - libvips types are **not Send**, so all vips work happens inside synchronous

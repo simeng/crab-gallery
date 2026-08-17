@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use axum::{
     body::{Body, Bytes},
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{header, HeaderMap, StatusCode},
     response::{Html as HtmlResponse, IntoResponse, Json as JsonResponse, Response},
 };
 use base64::Engine;
@@ -16,7 +16,9 @@ use mimetype_detector::detect_file;
 use tera::Context;
 
 use crate::app::{AppState, ImageFile, ImageParams, PreviewKey, UploadResponse};
-use crate::{IMAGE_DIR, is_supported_image_ext, load_image_info, sanitize_filename, sort_image_list, unique_image_path};
+use crate::{
+    is_supported_image_ext, load_image_info, sanitize_filename, sort_image_list, unique_image_path,
+};
 
 const MAX_PREVIEW_WIDTH: u32 = 4096;
 const MIN_PREVIEW_WIDTH: u32 = 8;
@@ -29,6 +31,15 @@ fn mtime_secs(meta: &std::fs::Metadata) -> i64 {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Resolve a URL filename (image title) to an indexed image. URLs use the
+/// bare filename, so with multiple `--dir`s the first match wins.
+async fn find_by_title(state: &AppState, title: &str) -> Option<Arc<ImageFile>> {
+    let list = state.image_list.read().await;
+    list.iter()
+        .find(|i| i.title.as_deref() == Some(title))
+        .cloned()
 }
 
 pub async fn render_api(State(state): State<Arc<AppState>>) -> JsonResponse<Vec<ImageFile>> {
@@ -62,26 +73,39 @@ pub async fn render_view(
     Path(path): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Result<HtmlResponse<String>, StatusCode> {
-    let key = format!("{}/{}", IMAGE_DIR, path);
+    let Some(image) = find_by_title(&state, &path).await else {
+        return Err(StatusCode::NOT_FOUND);
+    };
 
-    // Snapshot the sorted (newest-first) list and find the current image.
+    // Snapshot the sorted (newest-first) list and locate the current image.
     let mut sorted: Vec<Arc<ImageFile>> = {
         let list = state.image_list.read().await;
         list.iter().map(Arc::clone).collect()
     };
     sort_image_list(&mut sorted);
-    let Some(current_idx) = sorted.iter().position(|i| i.path == key) else {
+    let Some(current_idx) = sorted.iter().position(|i| i.path == image.path) else {
         return Err(StatusCode::NOT_FOUND);
     };
     let total = sorted.len();
-    let image = Arc::clone(&sorted[current_idx]);
 
-    let prev_img = if current_idx > 0 { sorted.get(current_idx - 1).cloned() } else { None };
+    let prev_img = if current_idx > 0 {
+        sorted.get(current_idx - 1).cloned()
+    } else {
+        None
+    };
     let next_img = sorted.get(current_idx + 1).cloned();
 
-    // Thumbnail strip: 4 before + current + 4 after (fills the image width).
-    let start = if current_idx > 4 { current_idx - 4 } else { 0 };
-    let end = (current_idx + 5).min(total);
+    // Thumbnail strip: a window of 9 centered on the current image
+    // (4 before + current + 4 after). At the list boundaries the window
+    // expands in the other direction so it is still 9 wide when possible.
+    const THUMB_WINDOW: usize = 9;
+    let half = THUMB_WINDOW / 2;
+    let mut start = current_idx.saturating_sub(half);
+    let end = (start + THUMB_WINDOW).min(total);
+    if end - start < THUMB_WINDOW {
+        // Near the end of the list: shift the window left to fill it.
+        start = end.saturating_sub(THUMB_WINDOW);
+    }
     let thumbnails: Vec<ImageFile> = sorted[start..end].iter().map(|t| (**t).clone()).collect();
     let active_thumb_idx = (current_idx - start + 1) as i32; // 1-indexed for tera loop
 
@@ -96,21 +120,35 @@ pub async fn render_view(
     context.insert("main_w", &MAIN_IMAGE_WIDTH);
     context.insert(
         "prev_title",
-        prev_img.as_ref().and_then(|p| p.title.as_deref()).unwrap_or_default(),
+        prev_img
+            .as_ref()
+            .and_then(|p| p.title.as_deref())
+            .unwrap_or_default(),
     );
     context.insert(
         "next_title",
-        next_img.as_ref().and_then(|n| n.title.as_deref()).unwrap_or_default(),
+        next_img
+            .as_ref()
+            .and_then(|n| n.title.as_deref())
+            .unwrap_or_default(),
     );
     context.insert(
         "first_title",
-        sorted.first().and_then(|f| f.title.as_deref()).unwrap_or_default(),
+        sorted
+            .first()
+            .and_then(|f| f.title.as_deref())
+            .unwrap_or_default(),
     );
     context.insert(
         "last_title",
-        sorted.last().and_then(|l| l.title.as_deref()).unwrap_or_default(),
+        sorted
+            .last()
+            .and_then(|l| l.title.as_deref())
+            .unwrap_or_default(),
     );
-    Ok(HtmlResponse(state.tera.render("view.tera", &context).unwrap()))
+    Ok(HtmlResponse(
+        state.tera.render("view.tera", &context).unwrap(),
+    ))
 }
 
 /// Image endpoint.
@@ -122,7 +160,10 @@ pub async fn render_image(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Result<Response, StatusCode> {
-    let full_path = std::path::Path::new(IMAGE_DIR).join(&path);
+    let Some(image) = find_by_title(&state, &path).await else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let full_path = std::path::PathBuf::from(image.path.clone());
 
     let meta = tokio::fs::metadata(&full_path)
         .await
@@ -142,7 +183,12 @@ pub async fn render_image(
             mtime_secs: mtime,
         };
 
-        let cached = state.preview_cache.lock().unwrap().get(&key).map(|b| b.to_vec());
+        let cached = state
+            .preview_cache
+            .lock()
+            .unwrap()
+            .get(&key)
+            .map(|b| b.to_vec());
         let bytes = match cached {
             Some(b) => b, // cache hit: zero vips work
             None => {
@@ -150,10 +196,7 @@ pub async fn render_image(
                 let bytes = tokio::task::spawn_blocking(move || {
                     // All libvips work lives inside this single blocking closure
                     // because VipsImage is !Send (dropped before returning).
-                    match libvips::ops::thumbnail(
-                        gen_path.to_str().unwrap_or(""),
-                        width as i32,
-                    ) {
+                    match libvips::ops::thumbnail(gen_path.to_str().unwrap_or(""), width as i32) {
                         Ok(img) => libvips::ops::jpegsave_buffer(&img).map_err(|e| e.to_string()),
                         Err(e) => Err(e.to_string()),
                     }
@@ -177,7 +220,10 @@ pub async fn render_image(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/jpeg")
             .header(header::CACHE_CONTROL, "public, max-age=86400")
-            .header(header::ETAG, format!("\"{}-{}-{}\"", key.path, width, mtime))
+            .header(
+                header::ETAG,
+                format!("\"{}-{}-{}\"", key.path, width, mtime),
+            )
             .body(Body::from(bytes))
             .unwrap());
     }
@@ -233,7 +279,10 @@ pub async fn upload_images(
             if too_large {
                 (
                     StatusCode::PAYLOAD_TOO_LARGE,
-                    format!("request body exceeds the {}MB limit", MAX_UPLOAD_BODY_BYTES / 1024 / 1024),
+                    format!(
+                        "request body exceeds the {}MB limit",
+                        MAX_UPLOAD_BODY_BYTES / 1024 / 1024
+                    ),
                 )
             } else {
                 (StatusCode::BAD_REQUEST, format!("read error: {}", e))
@@ -257,13 +306,14 @@ async fn upload_multipart(
     bytes: &Bytes,
 ) -> Result<JsonResponse<UploadResponse>, (StatusCode, String)> {
     let boundary = multer::parse_boundary(content_type).map_err(|e| {
-        (StatusCode::BAD_REQUEST, format!("invalid multipart content-type: {e:?}"))
+        (
+            StatusCode::BAD_REQUEST,
+            format!("invalid multipart content-type: {e:?}"),
+        )
     })?;
     // The body was already fully collected (and size-capped by the
     // DefaultBodyLimit layer), so feed it to multer as a single-chunk stream.
-    let stream = futures_util::stream::iter(vec![Ok::<Bytes, std::io::Error>(
-        bytes.clone(),
-    )]);
+    let stream = futures_util::stream::iter(vec![Ok::<Bytes, std::io::Error>(bytes.clone())]);
     let mut multipart = multer::Multipart::new(stream, boundary);
 
     let mut saved = Vec::new();
@@ -275,8 +325,31 @@ async fn upload_multipart(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("multipart error: {}", e)))?
     {
         // Text form fields have no filename; only accept file parts.
-        let Some(raw_name) = field.file_name().map(String::from) else { continue };
-        let part = field
+        let Some(raw_name) = field.file_name().map(String::from) else {
+            continue;
+        };
+        let part = field;
+        let base = sanitize_filename(&raw_name);
+        if !is_supported_image_ext(&base) {
+            errors.push(format!(
+                "\"{}\": unsupported type (jpg/jpeg/png only)",
+                raw_name
+            ));
+            continue;
+        }
+
+        // Buffer the part (local gallery; reject anything over 64MB).
+        let upload_dir = state.upload_dir.to_string_lossy().into_owned();
+        let target = unique_image_path(&upload_dir, &base);
+        tokio::fs::create_dir_all(&state.upload_dir)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("cannot create upload dir: {}", e),
+                )
+            })?;
+        let bytes = field
             .bytes()
             .await
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("read error: {}", e)))?;
@@ -324,7 +397,10 @@ async fn upload_form(
         })
         .unwrap_or("");
     if provided.is_empty() || provided != api_key {
-        return Err((StatusCode::UNAUTHORIZED, "invalid or missing API key".into()));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "invalid or missing API key".into(),
+        ));
     }
 
     let image_data = form.get("image_data").ok_or((
@@ -337,20 +413,24 @@ async fn upload_form(
         .map(String::as_str)
         .unwrap_or("upload.jpg");
 
-    let decoded =
-        match base64::engine::general_purpose::STANDARD.decode(image_data.as_bytes()) {
-            Ok(b) => b,
-            // Tolerate base64 variants that drop the padding.
-            Err(_) => base64::engine::general_purpose::STANDARD_NO_PAD
-                .decode(image_data.as_bytes())
-                .map_err(|e| (
+    let decoded = match base64::engine::general_purpose::STANDARD.decode(image_data.as_bytes()) {
+        Ok(b) => b,
+        // Tolerate base64 variants that drop the padding.
+        Err(_) => base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(image_data.as_bytes())
+            .map_err(|e| {
+                (
                     StatusCode::BAD_REQUEST,
                     format!("'image_data' is not valid base64: {}", e),
-                ))?,
-        };
+                )
+            })?,
+    };
 
     match save_image_bytes(&state, raw_name, decoded).await {
-        Ok(name) => Ok(JsonResponse(UploadResponse { saved: vec![name], errors: vec![] })),
+        Ok(name) => Ok(JsonResponse(UploadResponse {
+            saved: vec![name],
+            errors: vec![],
+        })),
         Err(msg) => {
             let status = if msg.contains("unsupported type") {
                 StatusCode::UNSUPPORTED_MEDIA_TYPE
@@ -372,7 +452,10 @@ async fn save_image_bytes(
 ) -> Result<String, String> {
     let base = sanitize_filename(raw_name);
     if !is_supported_image_ext(&base) {
-        return Err(format!("\"{}\": unsupported type (jpg/jpeg/png only)", raw_name));
+        return Err(format!(
+            "\"{}\": unsupported type (jpg/jpeg/png only)",
+            raw_name
+        ));
     }
     if data.len() > 64 * 1024 * 1024 {
         return Err(format!("\"{}\": exceeds 64MB limit", raw_name));
@@ -405,7 +488,10 @@ async fn save_image_bytes(
         }
         None => {
             let _ = tokio::fs::remove_file(&target).await;
-            Err(format!("\"{}\": file could not be decoded as an image", raw_name))
+            Err(format!(
+                "\"{}\": file could not be decoded as an image",
+                raw_name
+            ))
         }
     }
 }

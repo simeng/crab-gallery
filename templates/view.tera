@@ -47,7 +47,7 @@
          title="Open full-resolution source in a new tab">🖼 Original</a>
     </div>
 
-    <!-- Thumbnail strip: 4 before + current + 4 after -->
+    <!-- Thumbnail strip: window of 9 centered on the current image (expands at boundaries) -->
     <div id="thumbnails" class="thumbnail-list">
       {% for i in thumbnails %}
       <div class="thumbnail-item {% if active_thumb_idx == loop.index %}active{% endif %}">

@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 
 pub struct AppState {
     pub tera: Tera,
-    /// All known images keyed by their `./images/...` path.
+    /// All known images keyed by their canonical `<dir>/<file>` path.
     pub images: Arc<RwLock<HashMap<String, Arc<ImageFile>>>>,
     /// Same images as a list (kept sorted newest-first).
     pub image_list: Arc<RwLock<Vec<Arc<ImageFile>>>>,
@@ -19,6 +19,10 @@ pub struct AppState {
     pub preview_cache: Mutex<PreviewCache>,
     /// API key for the upload endpoint. `None` => uploads disabled.
     pub api_key: Option<String>,
+    /// Image folders in flag order; keys look like `<dir>/<file>`.
+    pub dirs: Vec<std::path::PathBuf>,
+    /// Where `POST /upload` saves files (defaults to the first dir).
+    pub upload_dir: std::path::PathBuf,
 }
 
 #[derive(Deserialize, Debug)]

@@ -15,6 +15,7 @@ libvips = "2.3.0"
 mimetype-detector = "0.3.10"
 notify = "8.0.0"
 serde = { version = "1.0.228", features = ["derive"] }
-tera = { version = "2.0.0", features = ['glob_fs'] }
+clap = { version = "4", features = ["derive"] }
+tera = { version = "2.0.0", features = ["glob_fs"] }
 tokio = { version = "1.52.3", features = ["full"] }
 walkdir = "2.5.0"

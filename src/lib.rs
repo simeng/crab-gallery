@@ -4,7 +4,7 @@ use crate::app::ImageFile;
 
 use std::collections::HashMap;
 use std::fs::metadata;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::RwLock as TokioRwlock;
@@ -13,7 +13,41 @@ use chrono::{DateTime, Local};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use walkdir::{DirEntry, WalkDir};
 
-pub const IMAGE_DIR: &str = "./images";
+/// One configured image folder: how it looks in keys/URLs (`display`) and its
+/// canonical on-disk location (used for watcher event matching).
+#[derive(Clone, Debug)]
+pub struct ImageDir {
+    pub display: String,
+    pub canonical: PathBuf,
+}
+
+/// Normalize configured `--dir` values. Missing dirs are skipped with a warning.
+pub fn resolve_dirs(dirs: &[PathBuf]) -> Vec<ImageDir> {
+    let mut out = Vec::new();
+    for d in dirs {
+        let display = d.to_string_lossy().into_owned();
+        match std::fs::canonicalize(d) {
+            Ok(canonical) => out.push(ImageDir {
+                // Keys keep the dir as the user typed it (without trailing '/').
+                display: display.trim_end_matches('/').to_string(),
+                canonical,
+            }),
+            Err(e) => eprintln!("warning: image dir '{}' not found or not a directory ({}); skipping", display, e),
+        }
+    }
+    out
+}
+
+/// Map a watcher event path (absolute) to our canonical `<dir>/<file>` key.
+pub fn relative_image_key(p: &Path, dirs: &[ImageDir]) -> Option<String> {
+    for dir in dirs {
+        if let Ok(rel) = p.strip_prefix(&dir.canonical) {
+            let rel_str = rel.to_str()?;
+            return Some(format!("{}/{}", dir.display, rel_str));
+        }
+    }
+    None
+}
 
 pub fn is_supported_image_ext(name: &str) -> bool {
     Path::new(name)
@@ -50,9 +84,9 @@ pub fn sanitize_filename(name: &str) -> String {
     }
 }
 
-/// Pick a non-colliding target name inside `./images` (timestamp suffix).
-pub fn unique_image_path(filename: &str) -> String {
-    let candidate = format!("{}/{}", IMAGE_DIR, filename);
+/// Pick a non-colliding target path inside `dir` (timestamp suffix).
+pub fn unique_image_path(dir: &str, filename: &str) -> String {
+    let candidate = format!("{}/{}", dir.trim_end_matches('/'), filename);
     if !std::path::Path::new(&candidate).exists() {
         return candidate;
     }
@@ -60,19 +94,12 @@ pub fn unique_image_path(filename: &str) -> String {
     let stem = filename.rsplit_once('.').map(|(s, _)| s).unwrap_or(filename);
     let ext = filename.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
     match ext {
-        Some(ext) => format!("{}/{}_{}.{}", IMAGE_DIR, stem, ts, ext),
+        Some(ext) => format!("{}/{}_{}.{}", dir.trim_end_matches('/'), stem, ts, ext),
         None => format!("{}/_{}", candidate, ts),
     }
 }
 
-/// Map a watcher event path (absolute) to our canonical `./images/...` key.
-pub fn relative_image_key(p: &Path) -> Option<String> {
-    let images_dir = std::fs::canonicalize(IMAGE_DIR).ok()?;
-    let rel = p.strip_prefix(&images_dir).ok()?;
-    Some(format!("{}/{}", IMAGE_DIR, rel.to_str()?))
-}
-
-/// Load image dimensions + metadata into an `ImageFile`.
+/// Load image dimensions + metadata into an `ImageFile` (path = the key).
 /// NOTE: libvips types are !Send — call this from a synchronous context or
 /// inside a single spawn_blocking closure; never across async task boundaries.
 pub fn load_image_info(path_str: &str) -> Option<Arc<ImageFile>> {
@@ -93,20 +120,25 @@ pub fn load_image_info(path_str: &str) -> Option<Arc<ImageFile>> {
     }))
 }
 
-/// Synchronous scan for initial load (called from main before serving starts).
-pub fn scan_images() -> (HashMap<String, Arc<ImageFile>>, Vec<Arc<ImageFile>>) {
+/// Synchronous scan of all configured dirs for the initial load.
+pub fn scan_images(dirs: &[ImageDir]) -> (HashMap<String, Arc<ImageFile>>, Vec<Arc<ImageFile>>) {
     let mut image_list: Vec<Arc<ImageFile>> = vec![];
 
-    for i in WalkDir::new(IMAGE_DIR) {
-        let entry: DirEntry = match i { Ok(e) => e, Err(_) => continue };
-        let path = entry.path();
-        if !entry.file_type().is_file() || !is_supported_image_ext(path.to_str().unwrap_or("")) {
-            continue;
-        }
-        let Some(path_str) = path.to_str().map(String::from) else { continue };
-        match load_image_info(&path_str) {
-            Some(img) => image_list.push(img),
-            None => println!("err reading image: {}", path_str),
+    for dir in dirs {
+        for i in WalkDir::new(&dir.canonical) {
+            let entry: DirEntry = match i { Ok(e) => e, Err(_) => continue };
+            let path = entry.path();
+            if !entry.file_type().is_file() || !is_supported_image_ext(path.to_str().unwrap_or("")) {
+                continue;
+            }
+            let Some(rel) = path.strip_prefix(&dir.canonical).ok().and_then(|r| r.to_str()) else {
+                continue;
+            };
+            let key = format!("{}/{}", dir.display, rel);
+            match load_image_info(&key) {
+                Some(img) => image_list.push(img),
+                None => println!("err reading image: {}", key),
+            }
         }
     }
 
@@ -126,7 +158,8 @@ pub fn sort_image_list(list: &mut Vec<Arc<ImageFile>>) {
     });
 }
 
-/// Spawn a file watcher that handles add/remove/modify events without rescanning.
+/// Spawn a file watcher over ALL configured dirs that handles
+/// add/remove/modify events without rescanning.
 ///
 /// IMPORTANT: do NOT replace this with an interval-based rescan/poll loop.
 /// We rely on notify's OS-level events so only changed files are touched.
@@ -134,7 +167,9 @@ pub fn spawn_image_watcher(
     handle: Handle,
     images: Arc<TokioRwlock<HashMap<String, Arc<ImageFile>>>>,
     image_list: Arc<TokioRwlock<Vec<Arc<ImageFile>>>>,
+    dirs: Vec<ImageDir>,
 ) -> RecommendedWatcher {
+    let watch_dirs = dirs.clone();
     let mut watcher = notify::recommended_watcher(move |res| {
         let evt: notify::Event = match res {
             Ok(e) => e,
@@ -150,8 +185,8 @@ pub fn spawn_image_watcher(
                     if !is_supported_image_ext(path.to_str().unwrap_or("")) {
                         continue;
                     }
-                    let Some(path_str) = relative_image_key(path) else {
-                        eprintln!("Skipping non-canonical event path: {}", path.display());
+                    let Some(path_str) = relative_image_key(path, &watch_dirs) else {
+                        eprintln!("Skipping event outside configured dirs: {}", path.display());
                         continue;
                     };
                     // Load dims synchronously (vips is not Send-safe). Retry a
@@ -212,7 +247,7 @@ pub fn spawn_image_watcher(
                     return;
                 }
                 // Refresh mtime + dims when they change.
-                let Some(path_str) = relative_image_key(p) else { return };
+                let Some(path_str) = relative_image_key(p, &watch_dirs) else { return };
                 let modified_at = std::fs::metadata(&path_str)
                     .ok()
                     .and_then(|m| m.modified().ok().map(Into::<DateTime<Local>>::into));
@@ -252,7 +287,11 @@ pub fn spawn_image_watcher(
     })
     .expect("Failed to create file watcher");
 
-    watcher.watch(std::path::Path::new(IMAGE_DIR), RecursiveMode::Recursive).ok();
+    for dir in &dirs {
+        watcher
+            .watch(&dir.canonical, RecursiveMode::Recursive)
+            .unwrap_or_else(|e| eprintln!("failed to watch {}: {}", dir.display, e));
+    }
 
     watcher
 }
@@ -285,5 +324,15 @@ mod tests {
         // Re-inserting replaces bytes and does not grow the cache.
         cache.insert(key("a"), vec![9]);
         assert_eq!(cache.get(&key("a")), Some(&[9][..]));
+    }
+
+    #[test]
+    fn unique_path_avoids_collisions() {
+        std::fs::create_dir_all("./images").ok();
+        let target = unique_image_path("./images", "exists_98765.jpg");
+        std::fs::write(&target, b"x").ok();
+        let unique = unique_image_path("./images", "exists_98765.jpg");
+        assert_ne!(unique, target);
+        let _ = std::fs::remove_file(target);
     }
 }

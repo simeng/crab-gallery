@@ -20,11 +20,17 @@ The file watcher (`spawn_image_watcher` in `src/lib.rs`) should:
 
 ## Canonical Path Keys (IMPORTANT)
 
-All in-memory keys are **`./images/<file>`** (relative, from `IMAGE_DIR`).
+All in-memory keys are **`<dir>/<file>`** where `<dir>` is the folder as given
+to `--dir` (default `./images`, no trailing slash). Multiple `--dir` flags are
+supported; uploads land in `--upload-dir` (defaults to the first `--dir`).
 notify delivers **absolute** paths, so every event must be normalized through
-`relative_image_key()` before touching the index. Skipping this produces
-duplicate entries with absolute-path keys that never dedupe — this exact bug
-happened before and regressed when the watcher was refactored.
+`relative_image_key(path, dirs)` before touching the index. Skipping this
+produces duplicate entries with absolute-path keys that never dedupe — this
+exact bug happened before and regressed when the watcher was refactored.
+
+URLs use the **bare filename** (`/view/{file}`, `/images/{file}`) and are
+resolved through the index by title (`find_by_title`); with several dirs the
+first match wins.
 
 ## libvips is NOT Send-Safe
 
@@ -51,6 +57,16 @@ code paths that insert into the index, keep them idempotent the same way.
   stale previews after a file changes. Don't remove mtime from the key.
 - Originals (`?orig` / no params) are served as raw bytes with
   `ETag: "mtime-size"` and must honor `If-None-Match` → 304.
+
+## Templates: disk-first with embedded fallback
+
+`load_templates()` in `main.rs` tries `templates/**/*` on disk first (so edits
+are picked up without recompiling) and registers any missing template from the
+`include_str!` copies in `EMBEDDED_TEMPLATES`. Tera's `load_from_glob`
+returns **Ok with an empty set** when the directory is missing — check which
+templates actually registered, don't rely on the Result. If you add a new
+template file, also add it to `EMBEDDED_TEMPLATES` or the fallback mode
+(templates/ absent) will 500 on render.
 
 ## Other Conventions / Gotchas
 
@@ -81,9 +97,16 @@ code paths that insert into the index, keep them idempotent the same way.
 - `render_view` always returns the **full** list of keys the template uses
   and positions are 1-indexed in the UI but 0-indexed in Rust.
 
+## CLI (clap)
+
+`main.rs` parses args with clap: `--dirs/-d` (repeatable), `--upload-dir`,
+`--host` (default 0.0.0.0), `--port` (default 8033), `--api-key`.
+Missing dirs are skipped with a warning; zero valid dirs is a hard error.
+Keep flags in sync with the README's Configuration section and `--help` text.
+
 ## File Structure
 
-- `src/lib.rs`: `scan_images` (initial sync scan), `spawn_image_watcher`,
+- `src/lib.rs`: `resolve_dirs`, `scan_images(dirs)`, `spawn_image_watcher(dirs)`,
   `relative_image_key`, `load_image_info`, filename helpers, unit tests.
 - `src/app.rs`: `AppState`, `ImageFile`, `PreviewCache` (LRU), request params.
 - `src/controllers.rs`: all HTTP handlers incl. the upload endpoint.
